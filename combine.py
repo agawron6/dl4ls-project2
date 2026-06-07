@@ -66,112 +66,179 @@ def main():
     original_seq_file = f"seq{seq_no}.fa"
     pos_to_original_nt = get_original_nts_from_fasta(original_seq_file)
 
+    for end in ["_A", "_J", "_M"]:
+        path_pattern = f"{DIRECTORY}/seq_{seq_no}_*{end}.tsv"
+        tsv_files = glob.glob(path_pattern)
+        
+        all_records = []
+        for tsv in tsv_files:
+            recs = collect_records(tsv)
+            all_records.extend(recs)
+
+        # Group by position, then count (from, to) combinations
+        position_to_changes = defaultdict(Counter)
+        for rec in all_records:
+            position = rec["position"]
+            from_nt = rec["from"]
+            to_nt = rec["to"]
+            position_to_changes[position][(from_nt, to_nt)] += 1
+
+        # Determine all possible from-to changes present, to determine columns of output
+        all_changes = set()
+        for changes_counter in position_to_changes.values():
+            all_changes.update(changes_counter.keys())
+        all_changes = sorted(all_changes, key=lambda ft: (ft[0], ft[1]))  # sorted for consistency
+
+        # Prepare header for output CSV (now includes original_nt field)
+        output_fields = ["position", "original_nt"] + [f"{f}_to_{t}" for (f, t) in all_changes]
+
+        # Write grouped and counted output
+        output_file = f"{OUTPUT_DIRECTORY}/seq{seq_no}_count_by_position{end}.csv"
+        with open(output_file, "w", newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=output_fields, delimiter=',')
+            writer.writeheader()
+            for position in sorted(position_to_changes.keys()):
+                # Get the original nt (use .get for positions that may be missing in the .fs file)
+                original_nt = pos_to_original_nt.get(position, "")
+                row = {'position': position, 'original_nt': original_nt}
+                for (f, t) in all_changes:
+                    row[f"{f}_to_{t}"] = position_to_changes[position][(f, t)]
+                writer.writerow(row)
+
+    # Compare the three files: "_A", "_J", "_M", and find similarities in mutations by position
+
+    # Load data from all three output files for comparison
+    count_by_position_files = [
+        f"{OUTPUT_DIRECTORY}/seq{seq_no}_count_by_position_A.csv",
+        f"{OUTPUT_DIRECTORY}/seq{seq_no}_count_by_position_J.csv",
+        f"{OUTPUT_DIRECTORY}/seq{seq_no}_count_by_position_M.csv",
+    ]
+    file_labels = ["A", "J", "M"]
+    mutation_counts_per_file = []  # List of dicts: [{position: {mutation: count}} for each file]
+    positions_set = set()
+    mutation_fields_set = set()
+
+    for fpath in count_by_position_files:
+        pos2mut = dict()
+        with open(fpath, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                pos = int(row['position'])
+                positions_set.add(pos)
+                # Identify mutation columns (skip 'position' and 'original_nt')
+                mut_counts = {k: int(v) for k, v in row.items() if k not in ['position', 'original_nt']}
+                pos2mut[pos] = mut_counts
+                mutation_fields_set.update(mut_counts.keys())
+        mutation_counts_per_file.append(pos2mut)
+
+    positions_all = sorted(positions_set)
+    mutation_fields_all = sorted(mutation_fields_set)
+
+    # For each position, find which mutations (A_to_C, G_to_T, etc.) are present with count > 0 in all three files
+    # and also collect the frequencies of each mutation in each file
+    similarities_per_position = dict()  # {position: [mutation_type, ...]}
+    mutation_frequencies_per_position = dict()  # {position: {mutation: [freq_A, freq_J, freq_M]}}
+
+    for pos in positions_all:
+        mut_sets = []
+        per_file_counts = []
+        for counts in mutation_counts_per_file:
+            mut_set = set()
+            count_dict = {}
+            if pos in counts:
+                mut_set = {m for m, v in counts[pos].items() if v > 0}
+                count_dict = counts[pos]
+            mut_sets.append(mut_set)
+            per_file_counts.append(count_dict)
+        common_mutations = set.intersection(*mut_sets) if mut_sets else set()
+        if common_mutations:
+            similarities_per_position[pos] = sorted(common_mutations)
+            # Store the frequencies for printing
+            mutation_frequencies_per_position[pos] = {}
+            for mut in sorted(common_mutations):
+                mut_freqs = []
+                for file_counts in per_file_counts:
+                    mut_freqs.append(file_counts.get(mut, 0))
+                mutation_frequencies_per_position[pos][mut] = mut_freqs
+
+    # Report: For each position with at least one mutation type in common across all 3 datasets,
+    # print the position and the common mutation(s) with the frequency from each file
+    print("Positions with similar mutations across all three files ('_A', '_J', '_M'):")
+    for pos in sorted(similarities_per_position):
+        common_muts = similarities_per_position[pos]
+        print(f" Position {pos}:")
+        for mut in common_muts:
+            freqs = mutation_frequencies_per_position[pos][mut]
+            freq_str = ', '.join(f"count_{label}={freq}" for label, freq in zip(file_labels, freqs))
+            print(f"   {mut}: {freq_str}")
     
-    path_pattern = f"{DIRECTORY}/seq_{seq_no}_*_A.tsv"
-    tsv_files = glob.glob(path_pattern)
-    
-    all_records = []
-    for tsv in tsv_files:
-        recs = collect_records(tsv)
-        all_records.extend(recs)
+    # # ---- Plotting section ----
+    # # Always plot from 0 to 230, even if data only covers a subset
+    # plot_min, plot_max = 0, 230
+    # num_positions = plot_max - plot_min + 1
+    # full_positions = np.arange(plot_min, plot_max + 1)
 
-    # Group by position, then count (from, to) combinations
-    position_to_changes = defaultdict(Counter)
-    for rec in all_records:
-        position = rec["position"]
-        from_nt = rec["from"]
-        to_nt = rec["to"]
-        position_to_changes[position][(from_nt, to_nt)] += 1
+    # # Build a lookup for position to row
+    # position_lookup = {}
+    # mutation_types = [f"{f}_to_{t}" for (f, t) in all_changes]
+    # for mut in mutation_types:
+    #     position_lookup[mut] = np.zeros(num_positions, dtype=int)
 
-    # Determine all possible from-to changes present, to determine columns of output
-    all_changes = set()
-    for changes_counter in position_to_changes.values():
-        all_changes.update(changes_counter.keys())
-    all_changes = sorted(all_changes, key=lambda ft: (ft[0], ft[1]))  # sorted for consistency
+    # original_nts_list = [''] * num_positions
 
-    # Prepare header for output CSV (now includes original_nt field)
-    output_fields = ["position", "original_nt"] + [f"{f}_to_{t}" for (f, t) in all_changes]
+    # # Read the output file and fill mapped positions in full arrays
+    # with open(output_file, "r") as f:
+    #     reader = csv.DictReader(f)
+    #     for row in reader:
+    #         pos = int(row["position"])
+    #         idx = pos - plot_min  # so if pos=0, idx=0; if pos=1, idx=1
+    #         if 0 <= idx < num_positions:
+    #             original_nts_list[idx] = row["original_nt"]
+    #             for mut in mutation_types:
+    #                 position_lookup[mut][idx] = int(row[mut])
 
-    # Write grouped and counted output
-    output_file = f"{OUTPUT_DIRECTORY}/seq{seq_no}_count_by_position.csv"
-    with open(output_file, "w", newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=output_fields, delimiter=',')
-        writer.writeheader()
-        for position in sorted(position_to_changes.keys()):
-            # Get the original nt (use .get for positions that may be missing in the .fs file)
-            original_nt = pos_to_original_nt.get(position, "")
-            row = {'position': position, 'original_nt': original_nt}
-            for (f, t) in all_changes:
-                row[f"{f}_to_{t}"] = position_to_changes[position][(f, t)]
-            writer.writerow(row)
-    
-    # ---- Plotting section ----
-    # Always plot from 0 to 230, even if data only covers a subset
-    plot_min, plot_max = 0, 230
-    num_positions = plot_max - plot_min + 1
-    full_positions = np.arange(plot_min, plot_max + 1)
+    # # Prepare data for heatmap (rows: positions 0..230, columns: mutation_types)
+    # data = np.zeros((num_positions, len(mutation_types)), dtype=int)
+    # for j, mut in enumerate(mutation_types):
+    #     data[:, j] = position_lookup[mut]
 
-    # Build a lookup for position to row
-    position_lookup = {}
-    mutation_types = [f"{f}_to_{t}" for (f, t) in all_changes]
-    for mut in mutation_types:
-        position_lookup[mut] = np.zeros(num_positions, dtype=int)
+    # # Plot as heatmap: rows are positions 0..230
+    # plt.figure(figsize=(max(10, len(mutation_types)*0.7), max(5, num_positions*0.12)))
+    # im = plt.imshow(data, aspect='auto', interpolation='nearest', cmap='plasma', origin='upper')
 
-    original_nts_list = [''] * num_positions
+    # plt.colorbar(im, label='Count')
+    # plt.yticks(np.arange(0, num_positions, max(1, num_positions // 20)), np.arange(plot_min, plot_max + 1, max(1, num_positions // 20)))
+    # plt.xticks(np.arange(len(mutation_types)), mutation_types, rotation=45, ha='right')
+    # plt.xlabel('Mutation (from_to)')
+    # plt.ylabel('Position')
+    # plt.title(f'Mutation Counts by Position for seq{seq_no}')
+    # plt.tight_layout()
+    # plt.savefig(f"{OUTPUT_DIRECTORY}/seq{seq_no}_count_by_position.png", dpi=200)
+    # plt.close()
+    # print(f"Plot saved to {OUTPUT_DIRECTORY}/{seq_no}_count_by_position.png")
 
-    # Read the output file and fill mapped positions in full arrays
-    with open(output_file, "r") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            pos = int(row["position"])
-            idx = pos - plot_min  # so if pos=0, idx=0; if pos=1, idx=1
-            if 0 <= idx < num_positions:
-                original_nts_list[idx] = row["original_nt"]
-                for mut in mutation_types:
-                    position_lookup[mut][idx] = int(row[mut])
+    # # ---- Additional Plot: Stacked Bar Chart of Changes per Position ----
+    # # Plot a stacked bar chart showing, for each position (0..230), counts of each mutation type
 
-    # Prepare data for heatmap (rows: positions 0..230, columns: mutation_types)
-    data = np.zeros((num_positions, len(mutation_types)), dtype=int)
-    for j, mut in enumerate(mutation_types):
-        data[:, j] = position_lookup[mut]
+    # fig, ax = plt.subplots(figsize=(max(10, num_positions * 0.05), 7))
+    # bottom = np.zeros(num_positions, dtype=int)
+    # color_map = plt.get_cmap('tab20')
+    # colors = [color_map(i % 20) for i in range(len(mutation_types))]
+    # for i, mut in enumerate(mutation_types):
+    #     counts = position_lookup[mut]
+    #     ax.bar(full_positions, counts, bottom=bottom, label=mut, color=colors[i], width=1.0)
+    #     bottom += counts
 
-    # Plot as heatmap: rows are positions 0..230
-    plt.figure(figsize=(max(10, len(mutation_types)*0.7), max(5, num_positions*0.12)))
-    im = plt.imshow(data, aspect='auto', interpolation='nearest', cmap='plasma', origin='upper')
-
-    plt.colorbar(im, label='Count')
-    plt.yticks(np.arange(0, num_positions, max(1, num_positions // 20)), np.arange(plot_min, plot_max + 1, max(1, num_positions // 20)))
-    plt.xticks(np.arange(len(mutation_types)), mutation_types, rotation=45, ha='right')
-    plt.xlabel('Mutation (from_to)')
-    plt.ylabel('Position')
-    plt.title(f'Mutation Counts by Position for seq{seq_no}')
-    plt.tight_layout()
-    plt.savefig(f"{OUTPUT_DIRECTORY}/seq{seq_no}_count_by_position.png", dpi=200)
-    plt.close()
-    print(f"Plot saved to {OUTPUT_DIRECTORY}/{seq_no}_count_by_position.png")
-
-    # ---- Additional Plot: Stacked Bar Chart of Changes per Position ----
-    # Plot a stacked bar chart showing, for each position (0..230), counts of each mutation type
-
-    fig, ax = plt.subplots(figsize=(max(10, num_positions * 0.05), 7))
-    bottom = np.zeros(num_positions, dtype=int)
-    color_map = plt.get_cmap('tab20')
-    colors = [color_map(i % 20) for i in range(len(mutation_types))]
-    for i, mut in enumerate(mutation_types):
-        counts = position_lookup[mut]
-        ax.bar(full_positions, counts, bottom=bottom, label=mut, color=colors[i], width=1.0)
-        bottom += counts
-
-    ax.set_xlim(plot_min, plot_max)
-    ax.set_xlabel('Position')
-    ax.set_ylabel('Count')
-    ax.set_title(f'Stacked Mutation Counts by Position for seq{seq_no}')
-    ax.legend(title="Mutation", bbox_to_anchor=(1.01, 1), loc='upper left', fontsize='small', borderaxespad=0)
-    plt.tight_layout()
-    barplot_file = f"{OUTPUT_DIRECTORY}/seq{seq_no}_mutation_stack_by_position.png"
-    plt.savefig(barplot_file, dpi=200)
-    plt.close()
-    print(f"Stacked bar plot saved to {barplot_file}")
+    # ax.set_xlim(plot_min, plot_max)
+    # ax.set_xlabel('Position')
+    # ax.set_ylabel('Count')
+    # ax.set_title(f'Stacked Mutation Counts by Position for seq{seq_no}')
+    # ax.legend(title="Mutation", bbox_to_anchor=(1.01, 1), loc='upper left', fontsize='small', borderaxespad=0)
+    # plt.tight_layout()
+    # barplot_file = f"{OUTPUT_DIRECTORY}/seq{seq_no}_mutation_stack_by_position.png"
+    # plt.savefig(barplot_file, dpi=200)
+    # plt.close()
+    # print(f"Stacked bar plot saved to {barplot_file}")
 
 if __name__ == "__main__":
     main()
