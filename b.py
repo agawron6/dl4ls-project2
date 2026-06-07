@@ -2,12 +2,16 @@ import torch
 import torch.nn as nn
 import pandas as pd
 import numpy as np
-
+import os
 # -------------------------------------------------------------------------
 # 1. SETUP AND UTILITIES
 # -------------------------------------------------------------------------
 NUCLEOTIDES = ['A', 'C', 'G', 'T']
 NUC_TO_IDX = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+WINDOW_SIZES = [20,25,30, 35, 40]
+OUT_DIR = "runs_stochastic"
+if not os.path.exists(OUT_DIR):
+    os.makedirs(OUT_DIR)
 
 def one_hot_encode(seq: str) -> torch.Tensor:
     """Encodes DNA sequence to match DeepSTARR dimension expectations (4 x L)."""
@@ -109,14 +113,30 @@ def optimize_sequence_single(initial_seq: str, model: nn.Module, max_iterations:
         current_score_tensor.backward()
         gradients = current_tensor.grad
 
-        # Calculate absolute maximum gradient across the 4 bases for each position
+        # 1. Compute absolute maximum gradient magnitude at each of the 230 positions
         position_salience = torch.max(torch.abs(gradients), dim=0)[0]
 
-        # Isolate the top N positions most sensitive to point mutations
-        top_positions = torch.topk(position_salience, k=scan_window_size).indices.tolist()
+        # 2. Isolate a pool of the top N (e.g., 5) most sensitive seed coordinates
+        # This pool captures both your upstream (bp 11-19) and downstream (bp 108-125) hubs
+        pool_size = 5
+        top_candidate_anchors = torch.topk(position_salience, k=pool_size).indices.cpu().numpy()
 
+        # 3. Stochastically select ONE coordinate from this high-salience pool
+        # This random choice breaks the deterministic local feedback loop
+        chosen_anchor = int(np.random.choice(top_candidate_anchors))
+
+        # 4. Construct a continuous, local scan window centered around the chosen anchor
+        half_win = scan_window_size // 2
+        window_start = max(0, chosen_anchor - half_win)
+        window_end = min(230, chosen_anchor + half_win)
+
+        # 5. Generate your continuous range of positions for the in silico scan
+        window_positions = list(range(window_start, window_end))
+        
         print(f"[SALIENCY] Global Max Gradient Magnitude: {torch.max(position_salience).item():.6f}")
-        print(f"[SALIENCY] Isolated Top-{scan_window_size} High-Sensitivity Coordinates: {top_positions}")
+        print(f"[SALIENCY] High-Sensitivity Anchor Candidates: {top_candidate_anchors}")
+        print(f"[WINDOW] Stochastically Anchored Window at bp {chosen_anchor}")
+        print(f"[WINDOW] Contiguous Footprint (bp {window_start} to {window_end - 1}): {window_positions}")
 
         best_mutation_score = baseline_score
         best_tensor = current_tensor.detach().clone()
@@ -125,7 +145,7 @@ def optimize_sequence_single(initial_seq: str, model: nn.Module, max_iterations:
         # Step B: Targeted In Silico Scanning
         print(f"\n[TIER 1] Launching Localized In Silico Scan on Top Positions...")
         current_tensor_detached = current_tensor.detach().clone()
-        for pos in top_positions:
+        for pos in window_positions:
             current_base_idx = torch.argmax(current_tensor_detached[:, pos]).item()
 
             # Diagnostic string to collect alternative scores for this position
@@ -230,7 +250,7 @@ if __name__ == "__main__":
 
     # Parameters
     max_iter = limit if limit is not None else 43
-    for scan_window_size in [20,25,30, 35, 40]:
+    for scan_window_size in WINDOW_SIZES:
 
         log_data = optimize_sequence_single(input_sequence, my_model, max_iterations=max_iter, scan_window_size=scan_window_size, device=device)
 
@@ -250,7 +270,7 @@ if __name__ == "__main__":
         # Create a filename with short date, time and pipeline params
         now = datetime.datetime.now()
         time_stamp = now.strftime("%Y%m%d_%H%M%S")
-        filename_A = f"runs/{header}_{time_stamp}_iter{max_iter}_win{scan_window_size}_A.tsv"
+        filename_A = f"{OUT_DIR}/{header}_{time_stamp}_iter{max_iter}_win{scan_window_size}_A.tsv"
 
         from evaluation_script_J import DeepSTARR_Lite
         my_model_J = DeepSTARR_Lite(seq_len)
@@ -269,7 +289,7 @@ if __name__ == "__main__":
 
         df_single_trajectory_J = pd.DataFrame(log_data_J)
 
-        filename_J = f"runs/{header}_{time_stamp}_iter{max_iter}_win{scan_window_size}_J.tsv"
+        filename_J = f"{OUT_DIR}/{header}_{time_stamp}_iter{max_iter}_win{scan_window_size}_J.tsv"
 
         from evaluation_script_M import DNARegulatoryCNN, get_model_params
 
@@ -301,7 +321,7 @@ if __name__ == "__main__":
 
         df_single_trajectory_M = pd.DataFrame(log_data_M)
 
-        filename_M = f"runs/{header}_{time_stamp}_iter{max_iter}_win{scan_window_size}_M.tsv"
+        filename_M = f"{OUT_DIR}/{header}_{time_stamp}_iter{max_iter}_win{scan_window_size}_M.tsv"
 
         df_single_trajectory_A.to_csv(filename_A, sep='\t', index=False)
         print(f"Saved optimization log to {filename_A}")
