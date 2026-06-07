@@ -230,7 +230,7 @@ if __name__ == "__main__":
 
     # Parameters
     max_iter = limit if limit is not None else 43
-    for scan_window_size in [20,25,30]:
+    for scan_window_size in [20,25,30, 35, 40]:
 
         log_data = optimize_sequence_single(input_sequence, my_model, max_iterations=max_iter, scan_window_size=scan_window_size, device=device)
 
