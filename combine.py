@@ -113,7 +113,7 @@ def main():
         f"{OUTPUT_DIRECTORY}/seq{seq_no}_count_by_position_J.csv",
         f"{OUTPUT_DIRECTORY}/seq{seq_no}_count_by_position_M.csv",
     ]
-    file_labels = ["A", "J", "M"]
+    file_labels = ["A", "J"
     mutation_counts_per_file = []  # List of dicts: [{position: {mutation: count}} for each file]
     positions_set = set()
     mutation_fields_set = set()
@@ -163,7 +163,7 @@ def main():
 
     # Report: For each position with at least one mutation type in common across all 3 datasets,
     # print the position and the common mutation(s) with the frequency from each file
-    print("Positions with similar mutations across all three files ('_A', '_J', '_M'):")
+    print("Positions with similar mutations across all three files ('_A', '_J'):")
     for pos in sorted(similarities_per_position):
         common_muts = similarities_per_position[pos]
         print(f" Position {pos}:")
