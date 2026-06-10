@@ -1,0 +1,15 @@
+position,mutation,A,J
+16,T_to_A,35,30
+20,C_to_A,35,4
+21,G_to_T,4,5
+27,T_to_A,35,4
+30,C_to_A,35,26
+36,C_to_G,22,13
+37,G_to_A,32,9
+38,T_to_A,3,3
+43,A_to_G,28,5
+43,A_to_T,5,7
+44,C_to_T,29,8
+47,T_to_C,9,10
+60,C_to_G,2,1
+95,A_to_G,4,2
